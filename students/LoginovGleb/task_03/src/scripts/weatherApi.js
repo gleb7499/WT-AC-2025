@@ -2,7 +2,7 @@
  * API клиент для работы с OpenWeatherMap
  */
 
-import { fetchWithRetry, CacheWithTTL } from './utils.js';
+import { fetchWithRetry, CacheWithTTL, NetworkError, BusinessError } from './utils.js';
 
 // API ключ OpenWeatherMap (бесплатный, можно заменить на свой)
 const API_KEY = 'bd5e378503939ddaee76f12ad7a97608'; // Публичный демо-ключ
@@ -38,7 +38,7 @@ export async function getWeatherByCity(cityName, { ignoreCache = false, signal =
         console.log(`🌐 Загрузка данных для "${cityName}" с сервера...`);
         
         // Запрос с retry, timeout и возможностью отмены
-        const data = await fetchWithRetry(url, {
+        const response = await fetchWithRetry(url, {
             retries: 2,
             backoffMs: 500,
             timeoutMs: 5000,
@@ -46,25 +46,31 @@ export async function getWeatherByCity(cityName, { ignoreCache = false, signal =
         });
 
         // Сохраняем в кэш
-        weatherCache.set(cacheKey, data);
+        weatherCache.set(cacheKey, response.data);
         console.log(`💾 Данные для "${cityName}" сохранены в кэш`);
 
-        return { ...data, fromCache: false };
+        return { ...response.data, fromCache: false };
     } catch (error) {
         // Если запрос был отменен
         if (error.message.includes('отменен') || error.name === 'AbortError') {
-            throw new Error('Запрос был отменен');
+            throw new NetworkError('Запрос был отменен');
         }
 
-        // Обработка ошибок API
-        if (error.message.includes('HTTP 404')) {
-            throw new Error(`Город "${cityName}" не найден`);
+        // Обработка ошибок API - преобразуем в бизнес-ошибки
+        if (error.code === 'NOT_FOUND' || error.statusCode === 404) {
+            throw new BusinessError(`Город "${cityName}" не найден`, 'CITY_NOT_FOUND');
         }
-        if (error.message.includes('HTTP 401')) {
-            throw new Error('Ошибка API ключа. Используйте свой ключ OpenWeatherMap');
+        if (error.code === 'AUTH_ERROR' || error.statusCode === 401) {
+            throw new BusinessError('Ошибка API ключа. Используйте свой ключ OpenWeatherMap', 'API_KEY_ERROR');
         }
 
-        throw error;
+        // Сетевые ошибки пробрасываем как есть
+        if (error.isNetworkError) {
+            throw error;
+        }
+
+        // Неизвестные ошибки оборачиваем в NetworkError
+        throw new NetworkError(`Ошибка загрузки погоды: ${error.message}`);
     }
 }
 

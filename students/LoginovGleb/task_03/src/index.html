@@ -1,63 +1,102 @@
 <!DOCTYPE html>
 <html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Трекер погоды - Лабораторная работа 03</title>
-    <meta name="description" content="Трекер погоды по городам с кэшированием результатов на 1 минуту">
-    <link rel="stylesheet" href="styles.css">
-</head>
-<body>
+    <meta
+      name="description"
+      content="Трекер погоды по городам с кэшированием результатов на 1 минуту"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
     <div class="container">
-        <header>
-            <h1>🌤️ Трекер погоды</h1>
-            <p class="subtitle">Кэширование результатов на 1 минуту</p>
-        </header>
+      <header>
+        <h1>🌤️ Трекер погоды</h1>
+        <p class="subtitle">Кэширование результатов на 1 минуту</p>
+      </header>
 
-        <main>
-            <section class="search-section">
-                <div class="search-wrapper">
-                    <input 
-                        type="search" 
-                        id="citySearch" 
-                        placeholder="Введите название города (например, Moscow, London, Paris...)" 
-                        aria-label="Поиск города"
-                        autocomplete="off"
-                    >
-                    <button id="searchBtn" class="btn btn-primary" aria-label="Искать погоду">
-                        <span class="btn-text">Поиск</span>
-                    </button>
-                    <button id="refreshBtn" class="btn btn-secondary" aria-label="Обновить данные (игнорировать кэш)" title="Обновить данные и игнорировать кэш">
-                        <span class="btn-text">🔄 Обновить</span>
-                    </button>
-                </div>
-                <div class="cache-info" id="cacheInfo" aria-live="polite"></div>
-            </section>
+      <main>
+        <section class="search-section">
+          <div class="search-wrapper">
+            <label for="citySearch" class="visually-hidden">Название города для поиска погоды</label>
+            <input
+              type="search"
+              id="citySearch"
+              placeholder="Введите название города (например, Moscow, London, Paris...)"
+              aria-label="Поиск города"
+              autocomplete="off"
+            />
+            <button
+              id="searchBtn"
+              class="btn btn-primary"
+              aria-label="Искать погоду"
+            >
+              <span class="btn-text">Поиск</span>
+            </button>
+            <button
+              id="refreshBtn"
+              class="btn btn-secondary"
+              aria-label="Обновить данные (игнорировать кэш)"
+              title="Обновить данные и игнорировать кэш"
+            >
+              <span class="btn-text">🔄 Обновить</span>
+            </button>
+          </div>
+          <div class="cache-info" id="cacheInfo" aria-live="polite"></div>
+        </section>
 
-            <section class="weather-cards" id="weatherCards" aria-live="polite" aria-label="Результаты погоды">
-                <!-- Здесь будут карточки с погодой -->
-            </section>
+        <section
+          class="weather-cards"
+          id="weatherCards"
+          aria-live="polite"
+          aria-label="Результаты погоды"
+        >
+          <!-- Здесь будут карточки с погодой -->
+        </section>
 
-            <section class="popular-cities">
-                <h2>Популярные города</h2>
-                <div class="cities-grid">
-                    <button class="city-btn" data-city="Moscow">Москва</button>
-                    <button class="city-btn" data-city="London">Лондон</button>
-                    <button class="city-btn" data-city="New York">Нью-Йорк</button>
-                    <button class="city-btn" data-city="Tokyo">Токио</button>
-                    <button class="city-btn" data-city="Paris">Париж</button>
-                    <button class="city-btn" data-city="Berlin">Берлин</button>
-                    <button class="city-btn" data-city="Sydney">Сидней</button>
-                    <button class="city-btn" data-city="Dubai">Дубай</button>
-                </div>
-            </section>
-        </main>
+        <section class="popular-cities">
+          <h2>Популярные города</h2>
+          <div class="cities-grid">
+            <button class="city-btn" data-city="Moscow">Москва</button>
+            <button class="city-btn" data-city="London">Лондон</button>
+            <button class="city-btn" data-city="New York">Нью-Йорк</button>
+            <button class="city-btn" data-city="Tokyo">Токио</button>
+            <button class="city-btn" data-city="Paris">Париж</button>
+            <button class="city-btn" data-city="Berlin">Берлин</button>
+            <button class="city-btn" data-city="Sydney">Сидней</button>
+            <button class="city-btn" data-city="Dubai">Дубай</button>
+          </div>
+        </section>
 
-        <footer>
-            <p>Лабораторная работа 03 | Логинов Глеб | 2025</p>
-        </footer>
+        <!-- Новая секция: Бесконечный скролл городов -->
+        <section class="infinite-scroll-section">
+          <div class="section-header">
+            <h2>Все города мира</h2>
+            <button id="toggleInfiniteScroll" class="btn btn-secondary">
+              <span class="btn-text">📋 Показать список</span>
+            </button>
+          </div>
+          
+          <div id="citiesListContainer" class="cities-list-container hidden">
+            <div class="cities-list" id="citiesList">
+              <!-- Города будут загружаться динамически -->
+              <div class="scroll-sentinel" id="scrollSentinel"></div>
+            </div>
+            <div class="loading-indicator" id="loadingIndicator">
+              <div class="spinner"></div>
+              <p>Загрузка городов...</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer>
+        <p>Лабораторная работа 03 | Логинов Глеб | 2025</p>
+      </footer>
     </div>
 
     <script type="module" src="scripts/main.js"></script>
-</body>
+  </body>
 </html>

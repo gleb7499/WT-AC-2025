@@ -3,6 +3,30 @@
  */
 
 /**
+ * Кастомные классы ошибок для разделения сетевых и бизнес-ошибок
+ */
+
+// Сетевые ошибки (проблемы с подключением, таймауты, HTTP статусы)
+export class NetworkError extends Error {
+    constructor(message, statusCode = null) {
+        super(message);
+        this.name = 'NetworkError';
+        this.statusCode = statusCode;
+        this.isNetworkError = true;
+    }
+}
+
+// Бизнес-ошибки (город не найден, невалидные данные, ошибки API)
+export class BusinessError extends Error {
+    constructor(message, code = null) {
+        super(message);
+        this.name = 'BusinessError';
+        this.code = code;
+        this.isBusinessError = true;
+    }
+}
+
+/**
  * Класс для управления кэшем с TTL (time-to-live)
  */
 export class CacheWithTTL {
@@ -68,6 +92,71 @@ export class CacheWithTTL {
 }
 
 /**
+ * Класс для управления ETag кэшем (условные HTTP запросы)
+ * Поддерживает If-None-Match заголовки для оптимизации трафика
+ */
+export class ETagCache {
+    constructor() {
+        this.cache = new Map(); // { url: { etag, data, timestamp } }
+    }
+
+    /**
+     * Сохранить данные с ETag
+     */
+    set(url, etag, data) {
+        this.cache.set(url, {
+            etag,
+            data,
+            timestamp: Date.now()
+        });
+    }
+
+    /**
+     * Получить ETag для URL (для If-None-Match заголовка)
+     */
+    getETag(url) {
+        const cached = this.cache.get(url);
+        return cached ? cached.etag : null;
+    }
+
+    /**
+     * Получить закэшированные данные
+     */
+    getData(url) {
+        const cached = this.cache.get(url);
+        return cached ? cached.data : null;
+    }
+
+    /**
+     * Проверить наличие кэша для URL
+     */
+    has(url) {
+        return this.cache.has(url);
+    }
+
+    /**
+     * Очистить весь кэш
+     */
+    clear() {
+        this.cache.clear();
+    }
+
+    /**
+     * Получить информацию о кэше
+     */
+    getCacheInfo(url) {
+        const cached = this.cache.get(url);
+        if (!cached) return null;
+
+        return {
+            hasETag: !!cached.etag,
+            timestamp: cached.timestamp,
+            age: Date.now() - cached.timestamp
+        };
+    }
+}
+
+/**
  * Fetch с повторными попытками, таймаутом и отменой
  * @param {string} url - URL для запроса
  * @param {Object} options - Опции запроса
@@ -75,13 +164,15 @@ export class CacheWithTTL {
  * @param {number} options.backoffMs - Начальная задержка между попытками (по умолчанию 500)
  * @param {number} options.timeoutMs - Таймаут запроса в мс (по умолчанию 5000)
  * @param {AbortSignal} options.signal - Сигнал для отмены запроса
+ * @param {Object} options.headers - Дополнительные заголовки
  * @returns {Promise<any>} - Распарсенный JSON ответ
  */
 export async function fetchWithRetry(url, {
     retries = 2,
     backoffMs = 500,
     timeoutMs = 5000,
-    signal = null
+    signal = null,
+    headers = {}
 } = {}) {
     let attempt = 0;
     let lastError;
@@ -96,25 +187,48 @@ export async function fetchWithRetry(url, {
             : controller.signal;
 
         try {
-            const response = await fetch(url, { signal: combinedSignal });
+            const response = await fetch(url, { 
+                signal: combinedSignal,
+                headers: headers
+            });
             clearTimeout(timeoutId);
 
             if (!response.ok) {
-                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                // Различаем типы ошибок
+                if (response.status >= 500) {
+                    throw new NetworkError(`Ошибка сервера ${response.status}: ${response.statusText}`, response.status);
+                } else if (response.status === 404) {
+                    throw new BusinessError(`Ресурс не найден (404)`, 'NOT_FOUND');
+                } else if (response.status === 401 || response.status === 403) {
+                    throw new BusinessError(`Ошибка авторизации (${response.status})`, 'AUTH_ERROR');
+                } else {
+                    throw new NetworkError(`HTTP ${response.status}: ${response.statusText}`, response.status);
+                }
             }
 
-            return await response.json();
+            // Возвращаем ответ с заголовками (для ETag)
+            const data = await response.json();
+            return {
+                data,
+                headers: response.headers,
+                status: response.status
+            };
         } catch (error) {
             clearTimeout(timeoutId);
             lastError = error;
 
             // Если запрос был отменен извне, не повторяем
-            if (signal?.aborted) {
-                throw new Error('Запрос был отменен');
+            if (signal?.aborted || error.name === 'AbortError') {
+                throw new NetworkError('Запрос был отменен');
+            }
+
+            // Бизнес-ошибки не повторяем
+            if (error.isBusinessError) {
+                throw error;
             }
 
             // Если это таймаут или сетевая ошибка и есть еще попытки
-            if (attempt < retries) {
+            if (attempt < retries && error.isNetworkError) {
                 const delay = backoffMs * Math.pow(2, attempt);
                 console.warn(`Попытка ${attempt + 1} не удалась. Повтор через ${delay}мс...`);
                 await sleep(delay);
@@ -125,7 +239,12 @@ export async function fetchWithRetry(url, {
         }
     }
 
-    throw new Error(`Не удалось выполнить запрос после ${retries + 1} попыток: ${lastError.message}`);
+    // Если это уже наша кастомная ошибка, пробрасываем как есть
+    if (lastError.isNetworkError || lastError.isBusinessError) {
+        throw lastError;
+    }
+
+    throw new NetworkError(`Не удалось выполнить запрос после ${retries + 1} попыток: ${lastError.message}`);
 }
 
 /**

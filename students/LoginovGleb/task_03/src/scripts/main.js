@@ -3,12 +3,21 @@
  */
 
 import { getWeatherByCity, getCacheInfo, clearCache } from './weatherApi.js';
-import { debounce, formatDateTime, kelvinToCelsius } from './utils.js';
+import { getCitiesPaginated, clearETagCache } from './mockApi.js';
+import { debounce, formatDateTime, kelvinToCelsius, NetworkError, BusinessError } from './utils.js';
 
 // Состояние приложения
 const state = {
     currentAbortController: null,
-    searchHistory: []
+    searchHistory: [],
+    // Состояние инфинит-скролла
+    infiniteScroll: {
+        currentPage: 0,
+        isLoading: false,
+        hasMore: true,
+        observer: null,
+        isVisible: false
+    }
 };
 
 // DOM элементы
@@ -18,7 +27,13 @@ const elements = {
     refreshBtn: document.getElementById('refreshBtn'),
     weatherCards: document.getElementById('weatherCards'),
     cacheInfo: document.getElementById('cacheInfo'),
-    cityButtons: document.querySelectorAll('.city-btn')
+    cityButtons: document.querySelectorAll('.city-btn'),
+    // Элементы для инфинит-скролла
+    toggleInfiniteScroll: document.getElementById('toggleInfiniteScroll'),
+    citiesListContainer: document.getElementById('citiesListContainer'),
+    citiesList: document.getElementById('citiesList'),
+    loadingIndicator: document.getElementById('loadingIndicator'),
+    scrollSentinel: document.getElementById('scrollSentinel')
 };
 
 /**
@@ -64,6 +79,188 @@ function init() {
     // Загружаем погоду для первого города при загрузке (используем кэш)
     elements.citySearch.value = 'Moscow';
     handleSearch(false); // false = использовать кэш, если доступен
+
+    // Инициализация инфинит-скролла
+    initInfiniteScroll();
+}
+
+/**
+ * Инициализация инфинит-скролла
+ */
+function initInfiniteScroll() {
+    // Обработчик кнопки показа/скрытия списка
+    elements.toggleInfiniteScroll.addEventListener('click', () => {
+        state.infiniteScroll.isVisible = !state.infiniteScroll.isVisible;
+        
+        if (state.infiniteScroll.isVisible) {
+            elements.citiesListContainer.classList.remove('hidden');
+            elements.toggleInfiniteScroll.innerHTML = '<span class="btn-text">📋 Скрыть список</span>';
+            
+            // Загружаем первую страницу, если еще не загружали
+            if (state.infiniteScroll.currentPage === 0) {
+                loadMoreCities();
+            }
+        } else {
+            elements.citiesListContainer.classList.add('hidden');
+            elements.toggleInfiniteScroll.innerHTML = '<span class="btn-text">📋 Показать список</span>';
+        }
+    });
+
+    // Проверяем, что sentinel существует
+    if (!elements.scrollSentinel) {
+        console.error('❌ Sentinel элемент не найден');
+        return;
+    }
+
+    // Проверяем, что sentinel в правильном месте
+    if (elements.scrollSentinel.parentNode !== elements.citiesList) {
+        console.warn('⚠️ Sentinel не в citiesList, перемещаем...');
+        elements.citiesList.appendChild(elements.scrollSentinel);
+    }
+
+    console.log('✅ Инфинит-скролл инициализирован, sentinel на месте');
+
+    // Настройка Intersection Observer для автозагрузки
+    state.infiniteScroll.observer = new IntersectionObserver(
+        (entries) => {
+            const sentinel = entries[0];
+            if (sentinel.isIntersecting && state.infiniteScroll.hasMore && !state.infiniteScroll.isLoading) {
+                console.log('🔄 Sentinel виден - загружаем больше городов');
+                loadMoreCities();
+            }
+        },
+        {
+            root: elements.citiesList,
+            rootMargin: '100px', // Prefetch за 100px до конца
+            threshold: 0.1
+        }
+    );
+
+    // Начинаем наблюдение за sentinel
+    state.infiniteScroll.observer.observe(elements.scrollSentinel);
+}
+
+/**
+ * Загрузка следующей страницы городов (с ETag кэшированием)
+ */
+async function loadMoreCities() {
+    if (state.infiniteScroll.isLoading || !state.infiniteScroll.hasMore) {
+        return;
+    }
+
+    state.infiniteScroll.isLoading = true;
+    elements.loadingIndicator.classList.add('visible');
+
+    try {
+        const nextPage = state.infiniteScroll.currentPage + 1;
+        console.log(`📥 Загрузка страницы ${nextPage}...`);
+
+        const result = await getCitiesPaginated({
+            page: nextPage,
+            limit: 10,
+            useETag: true
+        });
+
+        console.log(`📦 Получено ${result.data.length} городов для отображения`);
+
+        // Отображаем города
+        result.data.forEach((city, index) => {
+            const cityCard = createCityCard(city, result.fromCache);
+            // Безопасная вставка: проверяем, что sentinel в нужном контейнере
+            if (elements.scrollSentinel && elements.scrollSentinel.parentNode === elements.citiesList) {
+                elements.citiesList.insertBefore(cityCard, elements.scrollSentinel);
+            } else {
+                // Если sentinel не на месте, просто добавляем в конец
+                console.warn(`⚠️ Город ${index + 1}: sentinel не в citiesList, добавляем в конец`);
+                elements.citiesList.appendChild(cityCard);
+            }
+        });
+
+        // Обновляем состояние
+        state.infiniteScroll.currentPage = nextPage;
+        state.infiniteScroll.hasMore = result.hasMore;
+
+        console.log(`✅ Загружено ${result.data.length} городов (страница ${nextPage})`);
+        
+        if (result.fromCache) {
+            console.log('💾 Данные получены из ETag кэша (304 Not Modified)');
+        }
+
+        if (!result.hasMore) {
+            console.log('🏁 Все города загружены');
+            elements.loadingIndicator.innerHTML = '<p>Все города загружены</p>';
+        }
+
+    } catch (error) {
+        console.error('❌ Ошибка загрузки городов:', error);
+        showCitiesError(error);
+    } finally {
+        state.infiniteScroll.isLoading = false;
+        if (state.infiniteScroll.hasMore) {
+            elements.loadingIndicator.classList.remove('visible');
+        }
+    }
+}
+
+/**
+ * Создание карточки города
+ */
+function createCityCard(city, fromCache = false) {
+    const card = document.createElement('div');
+    card.className = 'city-card';
+    card.innerHTML = `
+        <div class="city-card-name">
+            🌍 ${city.name}
+            ${fromCache ? '<span class="etag-badge">ETag Cache</span>' : ''}
+        </div>
+        <div class="city-card-country">Страна: ${city.country}</div>
+        <div class="city-card-population">
+            Население: ${(city.population / 1000000).toFixed(1)}M
+        </div>
+    `;
+    
+    // Клик по карточке - поиск погоды
+    card.addEventListener('click', () => {
+        elements.citySearch.value = city.name;
+        handleSearch(false);
+        // Прокручиваем к результатам
+        elements.weatherCards.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    
+    return card;
+}
+
+/**
+ * Отображение ошибки загрузки городов
+ */
+function showCitiesError(error) {
+    const errorType = error.isNetworkError ? 'network' : 'business';
+    const errorMsg = document.createElement('div');
+    errorMsg.className = 'error-state';
+    errorMsg.style.gridColumn = '1 / -1'; // Занять всю ширину грида
+    
+    let errorHint = '';
+    if (error.message.includes('CONNECTION_REFUSED') || error.message.includes('Failed to fetch')) {
+        errorHint = '<p class="error-hint">💡 Убедитесь, что mock-сервер запущен: <code>cd mock-api && npm start</code></p>';
+    }
+    
+    errorMsg.innerHTML = `
+        <div class="error-icon">⚠️</div>
+        <h3>Ошибка загрузки городов</h3>
+        <p>${error.message}</p>
+        <span class="error-type-badge ${errorType}">
+            ${error.isNetworkError ? '🌐 Сетевая ошибка' : '💼 Бизнес-ошибка'}
+        </span>
+        ${errorHint}
+    `;
+    
+    // Добавляем перед sentinel (если он есть)
+    if (elements.scrollSentinel && elements.scrollSentinel.parentNode === elements.citiesList) {
+        elements.citiesList.insertBefore(errorMsg, elements.scrollSentinel);
+    } else {
+        // Иначе просто добавляем в конец
+        elements.citiesList.appendChild(errorMsg);
+    }
 }
 
 /**
@@ -109,7 +306,7 @@ async function handleSearch(ignoreCache = false) {
         if (error.message.includes('отменен')) {
             console.log('Запрос был отменен');
         } else {
-            showError(error.message);
+            showError(error);
         }
     } finally {
         state.currentAbortController = null;
@@ -134,12 +331,44 @@ function showLoading() {
 /**
  * Отображение ошибки
  */
-function showError(message) {
+function showError(error) {
+    // Определяем тип ошибки
+    const isNetworkError = error.isNetworkError || false;
+    const isBusinessError = error.isBusinessError || false;
+    const message = error.message || error;
+
+    let errorTypeLabel = '';
+    let errorTypeClass = '';
+    
+    if (isNetworkError) {
+        errorTypeLabel = '🌐 Сетевая ошибка';
+        errorTypeClass = 'network';
+    } else if (isBusinessError) {
+        errorTypeLabel = '💼 Бизнес-ошибка';
+        errorTypeClass = 'business';
+    }
+
     elements.weatherCards.innerHTML = `
         <div class="error-state">
             <div class="error-icon">⚠️</div>
             <h2>Ошибка</h2>
             <p>${message}</p>
+            ${errorTypeLabel ? `<span class="error-type-badge ${errorTypeClass}">${errorTypeLabel}</span>` : ''}
+        </div>
+    `;
+    elements.cacheInfo.textContent = '';
+}
+
+/**
+ * Отображение пустого состояния (нет результатов)
+ */
+function showEmpty(message = 'Нет результатов') {
+    elements.weatherCards.innerHTML = `
+        <div class="empty-state">
+            <div class="empty-icon">🔍</div>
+            <h2>Ничего не найдено</h2>
+            <p>${message}</p>
+            <p class="empty-hint">Попробуйте изменить запрос или выбрать город из списка ниже</p>
         </div>
     `;
     elements.cacheInfo.textContent = '';
@@ -250,12 +479,29 @@ window.forceRefresh = function() {
  * Очистка всего кэша (для отладки)
  */
 window.clearAllCache = function() {
-    clearCache();
+    clearCache(); // TTL кэш погоды
+    clearETagCache(); // ETag кэш городов
     elements.cacheInfo.innerHTML = `
         <div class="cache-status fresh">
-            🗑️ Весь кэш очищен
+            🗑️ Весь кэш очищен (TTL + ETag)
         </div>
     `;
+};
+
+/**
+ * Сброс инфинит-скролла (для отладки)
+ */
+window.resetInfiniteScroll = function() {
+    state.infiniteScroll.currentPage = 0;
+    state.infiniteScroll.hasMore = true;
+    elements.citiesList.innerHTML = '';
+    elements.citiesList.appendChild(elements.scrollSentinel);
+    elements.loadingIndicator.innerHTML = `
+        <div class="spinner"></div>
+        <p>Загрузка городов...</p>
+    `;
+    clearETagCache();
+    console.log('🔄 Инфинит-скролл сброшен');
 };
 
 // Запуск приложения
